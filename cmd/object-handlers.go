@@ -1896,7 +1896,7 @@ func (api objectAPIHandlers) PutObjectHandler(w http.ResponseWriter, r *http.Req
 		}
 	case authTypeStreamingUnsignedTrailer:
 		// Initialize stream chunked reader with optional trailers.
-		rd, s3Err = newUnsignedV4ChunkedReader(r, true, r.Header.Get(xhttp.Authorization) != "")
+		rd, s3Err = newUnsignedV4ChunkedReader(r, true, unsignedTrailerSignatureRequired(r))
 		if s3Err != ErrNone {
 			writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)
 			return
@@ -2242,7 +2242,8 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 	// if Content-Length is unknown/missing, deny the request
 	size := r.ContentLength
 	rAuthType := getRequestAuthType(r)
-	if rAuthType == authTypeStreamingSigned || rAuthType == authTypeStreamingSignedTrailer {
+	// speeed76/minio: the unsigned-trailer stream is decoded too (CVE-2026-40344 fix below), so it sizes like the others
+	if rAuthType == authTypeStreamingSigned || rAuthType == authTypeStreamingSignedTrailer || rAuthType == authTypeStreamingUnsignedTrailer {
 		if sizeStr, ok := r.Header[xhttp.AmzDecodedContentLength]; ok {
 			if sizeStr[0] == "" {
 				writeErrorResponse(ctx, w, errorCodes.ToAPIErr(ErrMissingContentLength), r.URL)
@@ -2292,6 +2293,15 @@ func (api objectAPIHandlers) PutObjectExtractHandler(w http.ResponseWriter, r *h
 	case authTypeStreamingSigned, authTypeStreamingSignedTrailer:
 		// Initialize stream signature verifier.
 		reader, s3Err = newSignV4ChunkedReader(r, rAuthType == authTypeStreamingSignedTrailer)
+		if s3Err != ErrNone {
+			writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)
+			return
+		}
+	case authTypeStreamingUnsignedTrailer:
+		// speeed76/minio security fork, CVE-2026-40344 vulnerability 1 (GHSA-9c4q-hq6p-c237): this auth type had no
+		// case here, so a fabricated signature fell through with no verification at all and the tar was extracted.
+		// Verify it as PutObjectHandler does, and decode the aws-chunked body.
+		reader, s3Err = newUnsignedV4ChunkedReader(r, true, unsignedTrailerSignatureRequired(r))
 		if s3Err != ErrNone {
 			writeErrorResponse(ctx, w, errorCodes.ToAPIErr(s3Err), r.URL)
 			return

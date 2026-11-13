@@ -24,7 +24,25 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	xhttp "github.com/minio/minio/internal/http"
 )
+
+// unsignedTrailerSignatureRequired reports whether a STREAMING-UNSIGNED-PAYLOAD-TRAILER request carries credentials
+// anywhere — the Authorization header OR the query string — and so must have its signature verified.
+//
+// speeed76/minio security fork, CVE-2026-41145 (GHSA-hv4r-mvr4-25vw) and CVE-2026-40344 (GHSA-9c4q-hq6p-c237):
+// callers gated verification on the Authorization header alone, while isPutActionAllowed also takes the access key
+// from X-Amz-Credential in the query string. A request with the key only in the query string therefore skipped
+// doesSignatureMatch and wrote with that key's permissions, without the secret. A truly anonymous request (no
+// credentials at all) still goes through the anonymous bucket-policy check, as before.
+func unsignedTrailerSignatureRequired(r *http.Request) bool {
+	if r.Header.Get(xhttp.Authorization) != "" {
+		return true
+	}
+	q := r.URL.Query()
+	return q.Get(xhttp.AmzCredential) != "" || q.Get(xhttp.AmzSignature) != "" || q.Get(xhttp.AmzAlgorithm) != ""
+}
 
 // newUnsignedV4ChunkedReader returns a new s3UnsignedChunkedReader that translates the data read from r
 // out of HTTP "chunked" format before returning it.
